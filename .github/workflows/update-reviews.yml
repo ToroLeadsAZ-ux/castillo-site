@@ -1,0 +1,64 @@
+name: Update Google review stats
+
+on:
+  schedule:
+    - cron: '0 13 * * *'   # 06:00 Phoenix (MST, no DST) every day
+  workflow_dispatch:        # lets you run it manually from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch rating + review count from Google Places
+        env:
+          PLACES_API_KEY: ${{ secrets.PLACES_API_KEY }}
+          PLACE_ID: ${{ secrets.PLACE_ID }}
+        run: |
+          set -e
+          RESP=$(curl -sS -X GET "https://places.googleapis.com/v1/places/${PLACE_ID}" -H "X-Goog-Api-Key: ${PLACES_API_KEY}" -H "X-Goog-FieldMask: rating,userRatingCount,displayName")
+          echo "$RESP" | head -c 800
+          RATING=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('rating',''))")
+          COUNT=$(echo "$RESP"  | python3 -c "import sys,json; print(json.load(sys.stdin).get('userRatingCount',''))")
+          if [ -z "$RATING" ] || [ -z "$COUNT" ]; then
+            echo "No rating returned - leaving reviews.json unchanged."
+            exit 0
+          fi
+          RATING=$(python3 -c "print(f'{float('$RATING'):.1f}')")
+          python3 - "$RATING" "$COUNT" <<'PY'
+          import json, sys, datetime
+          rating, count = sys.argv[1], sys.argv[2]
+          data = {"rating": rating, "count": count,
+                  "updated": datetime.date.today().isoformat()}
+          json.dump(data, open("reviews.json","w"), indent=2)
+          print("wrote", data)
+          PY
+
+      - name: Sync structured data + meta tags
+        run: |
+          RATING=$(python3 -c "import json;print(json.load(open('reviews.json'))['rating'])")
+          COUNT=$(python3 -c "import json;print(json.load(open('reviews.json'))['count'])")
+          python3 - "$RATING" "$COUNT" <<'PY'
+          import re, sys
+          rating, count = sys.argv[1], sys.argv[2]
+          p = "index.html"
+          s = open(p, encoding="utf-8").read()
+          s = re.sub(r'"ratingValue":"[\d.]+"', f'"ratingValue":"{rating}"', s)
+          s = re.sub(r'"reviewCount":"\d+"',    f'"reviewCount":"{count}"',  s)
+          s = re.sub(r'Rated [\d.]+ from \d+ Google reviews',
+                     f'Rated {rating} from {count} Google reviews', s)
+          open(p, "w", encoding="utf-8").write(s)
+          print("meta synced")
+          PY
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "review-bot"
+          git config user.email "actions@github.com"
+          git add reviews.json index.html
+          git diff --staged --quiet || git commit -m "Update Google review stats"
+          git push
