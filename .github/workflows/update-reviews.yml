@@ -20,6 +20,8 @@ jobs:
           PLACE_ID: ${{ secrets.PLACE_ID }}
         run: |
           set -e
+          PLACES_API_KEY="$(printf '%s' "$PLACES_API_KEY" | tr -d '[:space:]')"
+          PLACE_ID="$(printf '%s' "$PLACE_ID" | tr -d '[:space:]')"
           RESP=$(curl -sS -X GET "https://places.googleapis.com/v1/places/${PLACE_ID}" -H "X-Goog-Api-Key: ${PLACES_API_KEY}" -H "X-Goog-FieldMask: rating,userRatingCount,displayName")
           echo "$RESP" | head -c 800
           RATING=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('rating',''))")
